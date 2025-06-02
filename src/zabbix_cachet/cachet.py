@@ -16,9 +16,9 @@ class Cachet:
         """
         Init Cachet class for further needs
         """
-        self.server = server + '/api/v1/'
+        self.server = server + '/api/'
         self.token = token
-        self.headers = {'X-Cachet-Token': self.token, 'Accept': 'application/json; indent=4'}
+        self.headers = {'X-Cachet-Token': self.token, 'Authorization': f'Bearer {self.token}', 'Accept': 'application/json; indent=4'}
         self.verify = verify
         self.version = self.get_version()
 
@@ -39,7 +39,7 @@ class Cachet:
         except requests.exceptions.RequestException as e:
             raise client_http_error(url, None, e)
         # r.raise_for_status()
-        if r.status_code != 200:
+        if not (200 <= r.status_code < 300):
             return client_http_error(url, r.status_code, r.text)
         try:
             r_json = json.loads(r.text)
@@ -72,8 +72,12 @@ class Cachet:
         if r.status_code == 502:
             client_http_error(url, 502, "Bad Gateway")
             raise CachetApiException(f"Failed to get Cachet version. Probably it is not available")
-        elif r.status_code != 200:
-            return client_http_error(url, r.status_code, json.loads(r.text)['errors'])
+        elif not (200 <= r.status_code < 300):
+#            return client_http_error(url, r.status_code, json.loads(r.text)['errors'])
+             body = json.loads(r.text or '{}')
+             return client_http_error(
+                 url, r.status_code,
+                 body.get('errors') or body.get('message') or r.text)
         try:
             r_json = json.loads(r.text)
         except ValueError:
@@ -102,7 +106,7 @@ class Cachet:
         except requests.exceptions.RequestException as e:
             raise client_http_error(url, None, e)
         # r.raise_for_status()
-        if r.status_code != 200:
+        if not (200 <= r.status_code < 300):
             return client_http_error(url, r.status_code, r.text)
         try:
             r_json = json.loads(r.text)
@@ -145,7 +149,10 @@ class Cachet:
         """
         url = 'components'
         data = self._http_get(url)
-        total_pages = int(data['meta']['pagination']['total_pages'])
+        #total_pages = int(data['meta']['pagination']['total_pages']) old cachet v2 code
+        meta = data.get('meta', {})
+        pag  = meta.get('pagination', {}) if isinstance(meta.get('pagination', {}), dict) else meta
+        total_pages = int(pag.get('total_pages', pag.get('last_page', 1)))
         if name:
             components = []
             for page in range(total_pages, 0, -1):
@@ -154,13 +161,28 @@ class Cachet:
                 else:
                     data_page = self._http_get(url, params={'page': page})
                 for component in data_page['data']:
-                    if component['name'] == name:
+                    #if component['name'] == name:     # cachet v2
+                    #    components.append(component)
+                    comp_name = component.get('name') or component.get('attributes', {}).get('name')
+                    if comp_name == name:
                         components.append(component)
+
             if len(components) < 1:
                 return {'id': 0, 'name': 'Does not exists'}
             else:
                 return components
         return data
+
+    def _get_component_groupid(self, component_dict):
+        """Extract group id from a component dict (v2 & v3)."""
+        return (
+            component_dict.get('group_id') or                       # Cachet 2.x
+            component_dict.get('attributes', {}).get('group_id') or # rare in v3
+            component_dict.get('relationships', {})
+             .get('group', {})
+             .get('data', {})
+            .get('id', 0)                            # v3 JSON:API
+        )
 
     def new_components(self, name, **kwargs):
         """
@@ -182,19 +204,19 @@ class Cachet:
         # There are more that one component with same name already
         if isinstance(component, list):
             for i in component:
-                if i['group_id'] == params['group_id']:
+                if self._get_component_groupid(i) == params['group_id']:
                     return i
         elif isinstance(component, dict):
-            if not component['id'] == 0 and component.get('group_id', None) == params['group_id']:
+            if component.get('id') and self._get_component_groupid(component) == params['group_id']:
                 return component
         # Create component if it does not exist or exist in other group
         url = 'components'
         # params = {'name': name, 'link': link, 'description': description, 'status': status}
         logging.debug('Creating Cachet component {name}...'.format(name=params['name']))
         data = self._http_post(url, params)
-        logging.info('Component {name} was created in group id {group_id}.'.format(name=params['name'],
-                                                                                   group_id=data['data'][
-                                                                                       'group_id']))
+
+        logging.info('Component {name} created in group {gid}.'.format(name=params['name'], gid=self._get_component_groupid(data['data'])))
+
         return data['data']
 
     def upd_components(self, id, **kwargs):
@@ -222,9 +244,11 @@ class Cachet:
         @param name: string
         @return: dict of data
         """
-        url = 'components/groups'
+        url = 'component-groups'
         data = self._http_get(url)
-        total_pages = int(data['meta']['pagination']['total_pages'])
+        meta = data.get('meta', {})
+        pag  = meta.get('pagination', {}) if isinstance(meta.get('pagination', {}), dict) else meta
+        total_pages = int(pag.get('total_pages', pag.get('last_page', 1)))
         if name:
             for page in range(total_pages, 0, -1):
                 if page == 1:
@@ -232,7 +256,8 @@ class Cachet:
                 else:
                     data_page = self._http_get(url, params={'page': page})
                 for group in data_page['data']:
-                    if group['name'] == name:
+                    grp_name = group.get('name') or group.get('attributes', {}).get('name')
+                    if grp_name == name:
                         return group
             return {'id': 0, 'name': 'Does not exists'}
         return data
@@ -246,7 +271,7 @@ class Cachet:
         # Check if component's group already exists
         components_gr_id = self.get_components_gr(name)
         if components_gr_id['id'] == 0:
-            url = 'components/groups'
+            url = 'component-groups'
             # TODO: make if possible to configure default collapsed value
             params = {'name': name, 'collapsed': 2}
             logging.debug('Creating Component Group {}...'.format(params['name']))

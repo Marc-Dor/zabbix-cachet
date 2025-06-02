@@ -125,7 +125,14 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
             logging.error(f"Failed to get Cachet component with ID: {i.cachet_component_id}. Skip it")
             continue
         # Service not failed
-        component_status = cache_component['data']['status']
+        comp = cache_component.get('data', {})
+        # Cachet 2.x  →  comp['status']
+        # Cachet 3.x  →  comp['attributes']['status']['value']
+        component_status = (
+            comp.get('status') or
+            comp.get('attributes', {}).get('status', {}).get('value')
+        )
+
         if service.is_status_ok:
             # component in operational mode
             if str(component_status) == '1':
@@ -300,7 +307,7 @@ def init_cachet(services: List[ZabbixService], zapi: Zabbix, cachet: Cachet) -> 
                     cachet_group_id=cachet_group_id,
                     cachet_group_name=cachet_group_name,
                     cachet_component_id=component['id'],
-                    cachet_component_name=component['name'],
+                    cachet_component_name=(component.get('name') or component.get('attributes', {}).get('name')),
                     zbx_triggerid=dependency.triggerid
                 )
                 data.append(zxb2cachet_i)
@@ -326,7 +333,7 @@ def init_cachet(services: List[ZabbixService], zapi: Zabbix, cachet: Cachet) -> 
                 cachet_group_id=cachet_group_id,
                 cachet_group_name=cachet_group_name,
                 cachet_component_id=component['id'],
-                cachet_component_name=component['name'],
+                cachet_component_name=(component.get('name') or component.get('attributes', {}).get('name')),
                 zbx_triggerid=zbx_triggerid
             )
             data.append(zxb2cachet_i)
