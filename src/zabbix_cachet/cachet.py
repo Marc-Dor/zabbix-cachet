@@ -273,7 +273,7 @@ class Cachet:
         if components_gr_id['id'] == 0:
             url = 'component-groups'
             # TODO: make if possible to configure default collapsed value
-            params = {'name': name, 'collapsed': 2}
+            params = {'name': name, 'collapsed': 2, 'visible': 1}
             logging.debug('Creating Component Group {}...'.format(params['name']))
             data = self._http_post(url, params)
             if 'data' in data:
