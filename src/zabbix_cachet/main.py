@@ -143,7 +143,7 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
                 if str(last_inc['id']) != '0':
                     inc_msg = config.templates.resolving.format(
                         time=datetime.datetime.now(tz=config.tz).strftime('%b %d, %H:%M'),
-                    ) + cachet.get_incident(i.cachet_component_id)['message']
+                    ) + cachet.get_incident(i.cachet_component_id)['attributes']['message']
                     cachet.upd_incident(last_inc['id'],
                                         status=4,
                                         component_id=i.cachet_component_id,
@@ -229,14 +229,14 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
 
             last_inc = cachet.get_incident(i.cachet_component_id)
             # Incident not registered
-            if last_inc['status'] in ('-1', '4'):
+            if last_inc['attributes']['status']['value'] in ('-1', '4'):
                 cachet.new_incidents(name=inc_name, message=inc_msg, status=inc_status,
                                      component_id=i.cachet_component_id, component_status=comp_status)
 
             # Incident already registered
-            elif last_inc['status'] not in ('-1', '4'):
+            elif last_inc['attributes']['status']['value'] not in ('-1', '4'):
                 # Only incident message can change. So check if this have happened
-                if last_inc['message'].strip() != inc_msg.strip():
+                if last_inc['attributes']['message'].strip() != inc_msg.strip():
                     cachet.upd_incident(last_inc['id'], message=inc_msg, status=inc_status,
                                         component_status=comp_status)
     return True
@@ -296,10 +296,10 @@ def init_cachet(services: List[ZabbixService], zapi: Zabbix, cachet: Cachet) -> 
                     if not trigger:
                         logging.error('Failed to get trigger {} from Zabbix'.format(dependency.triggerid))
                         continue
-                    component = cachet.new_components(dependency.name, group_id=cachet_group_id,
+                    component = cachet.new_components(dependency.name, component_group_id=cachet_group_id,
                                                       link=trigger['url'], description=trigger['description'])
                 else:
-                    component = cachet.new_components(dependency.name, group_id=group['id'],
+                    component = cachet.new_components(dependency.name, component_group_id=group['id'],
                                                       description=dependency.description)
                 # Create a map of Zabbix Trigger <> Cachet IDs
                 zxb2cachet_i = ZabbixCachetMap(
@@ -403,7 +403,7 @@ def main():
                 zbxtr2cachet = zbxtr2cachet_new
                 logging.info('Restart triggers_watcher worker')
                 # TODO: Could failed
-                logging.debug(f'List of watching triggers {zbxtr2cachet}')
+                logging.info(f'List of watching triggers {zbxtr2cachet}')
                 event.set()
                 # Wait until tread die
                 while inc_update_t.is_alive():

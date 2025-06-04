@@ -149,7 +149,6 @@ class Cachet:
         """
         url = 'components'
         data = self._http_get(url)
-        #total_pages = int(data['meta']['pagination']['total_pages']) old cachet v2 code
         meta = data.get('meta', {})
         pag  = meta.get('pagination', {}) if isinstance(meta.get('pagination', {}), dict) else meta
         total_pages = int(pag.get('total_pages', pag.get('last_page', 1)))
@@ -192,7 +191,7 @@ class Cachet:
         @return: dict of data
         """
         # Get values for new component
-        params = {'name': name, 'link': '', 'description': '', 'status': '1', 'group_id': 0}
+        params = {'name': name, 'link': '', 'description': '', 'status': '1', 'component_group_id': 0}
         params.update(kwargs)
         # Do not post empty params to Cachet
         for i in ('link', 'description'):
@@ -204,10 +203,10 @@ class Cachet:
         # There are more that one component with same name already
         if isinstance(component, list):
             for i in component:
-                if self._get_component_groupid(i) == params['group_id']:
+                if self._get_component_groupid(i) == params['component_group_id']:
                     return i
         elif isinstance(component, dict):
-            if component.get('id') and self._get_component_groupid(component) == params['group_id']:
+            if component.get('id') and self._get_component_groupid(component) == params['component_group_id']:
                 return component
         # Create component if it does not exist or exist in other group
         url = 'components'
@@ -291,16 +290,18 @@ class Cachet:
         # TODO: make search by name
         url = 'incidents'
         data = self._http_get(url)
-        total_pages = int(data['meta']['pagination']['total_pages'])
+        meta = data.get('meta', {})
+        pag  = meta.get('pagination', {}) if isinstance(meta.get('pagination', {}), dict) else meta
+        total_pages = int(pag.get('total_pages', pag.get('last_page', 1)))
         for page in range(total_pages, 0, -1):
             data = self._http_get(url, params={'page': page})
             data_sorted = sorted(data['data'], key=itemgetter('id'), reverse=True)
             for incident in data_sorted:
-                if str(incident['component_id']) == str(component_id):
+                if str(incident['attributes']['component_id']) == str(component_id):
                     # Convert status to str
-                    incident['status'] = str(incident['status'])
+                    incident['attributes']['status']['value'] = str(incident['attributes']['status']['value'])
                     return incident
-        return {'id': '0', 'name': 'Does not exist', 'status': '-1'}
+        return {'id': '0', 'attributes': {'name': 'Does not exist', 'status': {'value': '-1'}}}
 
     def new_incidents(self, **kwargs):
         """
@@ -329,8 +330,9 @@ class Cachet:
                 component_status
         @return: boolean
         """
+        # TODO: component_status doesn't exist in the API
         url = 'incidents/' + str(id)
         params = kwargs
         data = self._http_put(url, params)
-        logging.info(f"Incident ID {id} was updated. Status - {data['data']['human_status']}")
+        logging.info(f"Incident ID {id} was updated. Status - {data['data']['attributes']['status']['human']}")
         return data
