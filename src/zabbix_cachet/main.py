@@ -77,8 +77,6 @@ class ZabbixCachetMap:
     cachet_group_name: str = ''
 
     zbx_serviceid: str = None
-    # Only for Zabbix < 6.0
-    zbx_triggerid: str = None
 
     def __str__(self):
         return f"{self.cachet_group_name}/{self.cachet_component_name} - {self.zbx_serviceid}"
@@ -137,38 +135,39 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
             # component in operational mode
             if str(component_status) == '1':
                 continue
+
+            # component not operational mode. Resolve it.
+            last_inc = cachet.get_incident(i.cachet_component_id)
+            if str(last_inc['id']) != '0':
+                inc_msg = config.templates.resolving.format(
+                    time=datetime.datetime.now(tz=config.tz).strftime('%b %d, %H:%M'),
+                ) + cachet.get_incident(i.cachet_component_id)['attributes']['message']
+                cachet.upd_incident(last_inc['id'],
+                                    status=4,
+                                    component_id=i.cachet_component_id,
+                                    component_status=1,
+                                    message=inc_msg)
+
+                # TODO: Hotfix, because components don't get attached to incident https://github.com/cachethq/core/issues/156
+                cachet.upd_components(i.cachet_component_id, status=1)
+            # Incident does not exist. Just change component status
             else:
-                # component not operational mode. Resolve it.
-                last_inc = cachet.get_incident(i.cachet_component_id)
-                if str(last_inc['id']) != '0':
-                    inc_msg = config.templates.resolving.format(
-                        time=datetime.datetime.now(tz=config.tz).strftime('%b %d, %H:%M'),
-                    ) + cachet.get_incident(i.cachet_component_id)['attributes']['message']
-                    cachet.upd_incident(last_inc['id'],
-                                        status=4,
-                                        component_id=i.cachet_component_id,
-                                        component_status=1,
-                                        message=inc_msg)
-                # Incident does not exist. Just change component status
-                else:
-                    cachet.upd_components(i.cachet_component_id, status=1)
+                cachet.upd_components(i.cachet_component_id, status=1)
             # Continue with next service. This one is ok.
             continue
 
         # Service failed
-        if zapi.version_major < 6:
-            triggers = zapi.get_trigger(triggerid=service.triggerid)
-            # Check if Zabbix return trigger
-            # TODO: Do we need this check?
-            if 'value' not in triggers[0]:
-                logging.error(f'Cannot get value for trigger {service.triggerid}')
-                continue
-            if str(triggers[0]['value']) == '0':
-                logging.warning(f'Service {service.serviceid} in failed state but trigger {service.triggerid} is ok.'
-                                f'It could be race condition but if you see this often - bug.')
-                continue
+
+        # TODO: For Services that don't have problem_tags, but have child-services, this completely breaks (It get's EVERY unresolved problem)
+        #triggers = zapi.get_trigger(tags=service.problem_tags)
+        # TODO: Needs to go through childs recursively instead and figure out root-cause somehow.. including 'additional rules' of the service
+
+        # TODO: Hotfix
+        if service.has_children:
+            problem_tags = zapi.get_concated_problem_tags_with_children(service)
+            logging.debug(f"Recursively concatenated problem_tags for service {service.name}: {problem_tags}")
+            triggers = zapi.get_trigger(problem_tags)
         else:
-            # All trigger in Active state because we use only_true=True argument
             triggers = zapi.get_trigger(tags=service.problem_tags)
 
         for trigger in triggers:
@@ -194,11 +193,11 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
                         inc_msg = ack_msg + inc_msg
             else:
                 inc_status = 1
-            # TODO: Rewrite it to get current severity from service.
-            # Zabbix 6.0+ fine works with it and allow to change via Dashboard
-            if int(trigger['priority']) >= 4:
+
+            # TODO: Does this allow to change via Dashboard?
+            if service.status >= 4:
                 comp_status = 4
-            elif int(trigger['priority']) == 3:
+            elif service.status == 3:
                 comp_status = 3
             else:
                 comp_status = 2
@@ -218,7 +217,7 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
                     trigger_name=trigger.get('description', ''),
                 )
 
-            # Just in case when user set investigating template to empty string
+            # Just in case when user sets investigating template to empty string
             if not inc_msg and trigger.get('comments'):
                 inc_msg = trigger.get('comments')
             elif not inc_msg:
@@ -232,13 +231,17 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
             if last_inc['attributes']['status']['value'] in ('-1', '4'):
                 cachet.new_incidents(name=inc_name, message=inc_msg, status=inc_status,
                                      component_id=i.cachet_component_id, component_status=comp_status)
+                # TODO: Hotfix, because components don't get attached to incident https://github.com/cachethq/core/issues/156
+                cachet.upd_components(i.cachet_component_id, status=comp_status)
 
             # Incident already registered
-            elif last_inc['attributes']['status']['value'] not in ('-1', '4'):
-                # Only incident message can change. So check if this have happened
+            else:
+                # Only incident message can change. So check if this has happened
                 if last_inc['attributes']['message'].strip() != inc_msg.strip():
                     cachet.upd_incident(last_inc['id'], message=inc_msg, status=inc_status,
                                         component_status=comp_status)
+                    # TODO: Hotfix, because components don't get attached to incident https://github.com/cachethq/core/issues/156
+                    cachet.upd_components(i.cachet_component_id, status=comp_status)
     return True
 
 
@@ -281,7 +284,6 @@ def init_cachet(services: List[ZabbixService], zapi: Zabbix, cachet: Cachet) -> 
     data = []
 
     for zbx_service in services:
-        zbx_triggerid = None
         cachet_group_id = None
         cachet_group_name = ''
         # Check if zbx_service has childes
@@ -289,17 +291,9 @@ def init_cachet(services: List[ZabbixService], zapi: Zabbix, cachet: Cachet) -> 
             cachet_group_name = zbx_service.name
             group = cachet.new_components_gr(name=cachet_group_name)
             cachet_group_id = group['id']
+
             for dependency in zbx_service.children:
-                # Component without trigger
-                if dependency.triggerid:
-                    trigger = zapi.get_trigger(triggerid=dependency.triggerid)[0]
-                    if not trigger:
-                        logging.error('Failed to get trigger {} from Zabbix'.format(dependency.triggerid))
-                        continue
-                    component = cachet.new_components(dependency.name, component_group_id=cachet_group_id,
-                                                      link=trigger['url'], description=trigger['description'])
-                else:
-                    component = cachet.new_components(dependency.name, component_group_id=group['id'],
+                component = cachet.new_components(dependency.name, component_group_id=cachet_group_id,
                                                       description=dependency.description)
                 # Create a map of Zabbix Trigger <> Cachet IDs
                 zxb2cachet_i = ZabbixCachetMap(
@@ -307,25 +301,15 @@ def init_cachet(services: List[ZabbixService], zapi: Zabbix, cachet: Cachet) -> 
                     cachet_group_id=cachet_group_id,
                     cachet_group_name=cachet_group_name,
                     cachet_component_id=component['id'],
-                    cachet_component_name=(component.get('name') or component.get('attributes', {}).get('name')),
-                    zbx_triggerid=dependency.triggerid
+                    cachet_component_name=(component.get('name') or component.get('attributes', {}).get('name'))
                 )
                 data.append(zxb2cachet_i)
         else:
-            if zbx_service.triggerid and zbx_service.triggerid != '0':
-                trigger = zapi.get_trigger(triggerid=zbx_service.triggerid)[0]
-                if not trigger:
-                    logging.error('Failed to get trigger {} from Zabbix'.format(zbx_service.triggerid))
-                    continue
-                component = cachet.new_components(zbx_service.name, link=trigger['url'],
-                                                  description=trigger['description'])
-                # Create a map of Zabbix Trigger <> Cachet IDs
-                zbx_triggerid = zbx_service.triggerid
-            elif zbx_service.problem_tags:
+            if zbx_service.problem_tags:
                 component = cachet.new_components(zbx_service.name, description=zbx_service.description)
             else:
                 logging.warning(f'Zabbix Service with service id = {zbx_service.serviceid} does not have'
-                                f' trigger, child service or problem_tags. Monitoring will not work for it')
+                                f' child service or problem_tags. Monitoring will not work for it')
                 continue
             # Create a map of Zabbix Trigger <> Cachet IDs
             zxb2cachet_i = ZabbixCachetMap(
@@ -333,8 +317,7 @@ def init_cachet(services: List[ZabbixService], zapi: Zabbix, cachet: Cachet) -> 
                 cachet_group_id=cachet_group_id,
                 cachet_group_name=cachet_group_name,
                 cachet_component_id=component['id'],
-                cachet_component_name=(component.get('name') or component.get('attributes', {}).get('name')),
-                zbx_triggerid=zbx_triggerid
+                cachet_component_name=(component.get('name') or component.get('attributes', {}).get('name'))
             )
             data.append(zxb2cachet_i)
     return data

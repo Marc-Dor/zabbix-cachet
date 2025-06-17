@@ -32,8 +32,8 @@ items of services that is exported to Cachet and Cachet`s API key.
 ![Cachet Components](https://cloud.githubusercontent.com/assets/8394059/14298058/c5c8b806-fb93-11e5-83f6-ff32aeb5fb4d.png)
 
 # Requirements
-* Cachet 2.2, 2.3
-* Zabbix 2.X, 3.X, 4.0, 5.0, 6.0, 6.4, 7.0
+* Cachet 3.x
+* Zabbix 6.0, 6.4, 7.0
 * python 3.6+
 
 # Installation

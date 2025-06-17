@@ -30,13 +30,10 @@ class ZabbixService:
     name: str
     serviceid: str
     status: int
-    zabbix_version_major: int
-    triggerid: str = None
     children: List['ZabbixService'] = field(default_factory=list)
     problem_tags: List[dict] = field(default_factory=list)
     description: str = ''
-    # TODO: Change to parents in future if will needed
-    is_parents: bool = False
+    has_children: bool = False
 
     def __repr__(self):
         if self.is_status_ok:
@@ -47,13 +44,7 @@ class ZabbixService:
 
     @property
     def is_status_ok(self) -> bool:
-        if self.zabbix_version_major < 6:
-            if self.status == 0:
-                return True
-        else:
-            if self.status == -1:
-                return True
-        return False
+        return self.status == -1
 
 
 class Zabbix:
@@ -76,16 +67,6 @@ class Zabbix:
             urllib3.disable_warnings()
         self.zapi.login(user, password)
         self.version = self.get_version()
-        # Zabbix made significant changes in 6.0 https://support.zabbix.com/browse/ZBXNEXT-6674
-        try:
-            self.version_major = int(self.version.split('.')[0])
-            if self.version_major >= 6:
-                self.get_service = self.get_service
-            else:
-                self.get_service = self.get_service_legacy
-        except (TypeError, IndexError) as err:
-            logging.error(f"Failed to compare major Zabbix version - {self.version}: {err}")
-            sys.exit(1)
 
     @pyzabbix_safe()
     def get_version(self):
@@ -98,22 +79,16 @@ class Zabbix:
         return version
 
     @pyzabbix_safe({})
-    def get_trigger(self, triggerid: str = '', tags: List = None) -> List[dict]:
+    def get_trigger(self, tags: List = None) -> List[dict]:
         """
-        Get trigger information by trigger_id or tags
+        Get trigger information by tags
         https://www.zabbix.com/documentation/6.0/en/manual/api/reference/trigger/get
         """
-        if triggerid:
-            trigger = self.zapi.trigger.get(
-                expandComment='true',
-                expandDescription='true',
-                triggerids=triggerid)
-        else:
-            trigger = self.zapi.trigger.get(
-                expandComment='true',
-                expandDescription='true',
-                tags=tags,
-                only_true=True)
+        trigger = self.zapi.trigger.get(
+            expandComment='true',
+            expandDescription='true',
+            tags=tags,
+            only_true=True)
         return trigger
 
     @pyzabbix_safe({})
@@ -139,7 +114,6 @@ class Zabbix:
     def get_service(self, name: str = '', serviceid: Union[List, str] = None,
                     parentids: str = '') -> List[Dict]:
         """
-        For zabbix 6.0 +
         https://www.zabbix.com/documentation/6.0/en/manual/appendix/services_upgrade
         :return:
         """
@@ -158,49 +132,21 @@ class Zabbix:
             services = self.zapi.service.get(**query)
         return services
 
-    @pyzabbix_safe([])
-    def get_service_legacy(self, name: str = '', serviceid: Union[List, str] = None,
-                           parentids: str = '') -> List[Dict]:
-        """
-        For old zabbix before 6.0
-        :return:
-        """
-        if name:
-            services = self.zapi.service.get(selectDependencies='extend', selectParentDependencies='extend',
-                                             filter={'name': name})
-        elif serviceid:
-            services = self.zapi.service.get(selectDependencies='extend', selectParentDependencies='extend',
-                                             serviceids=serviceid)
-        elif parentids:
-            services = self.zapi.service.get(selectDependencies='extend', selectParentDependencies='extend',
-                                             parentids=parentids)
-        else:
-            services = self.zapi.service.get(selectDependencies='extend', selectParentDependencies='extend')
-        for service in services:
-            service['children'] = service.pop('dependencies')
-            service['parents'] = service.pop('parentDependencies')
-        return services
-
     def _init_zabbix_it_service(self, data: Dict) -> ZabbixService:
         """
         Create ZabbixITService from data returned by service.get
         :param data: Service object
             https://www.zabbix.com/documentation/current/en/manual/api/reference/service/object
         """
-        logging.debug(f"Init ZabbixITService for {data.get('name')} ")
+        logging.debug(f"Init ZabbixITService for {data.get('name')} with problem_tags {data.get('problem_tags', [])}")
         zabbix_it_service = ZabbixService(name=data.get('name'),
                                           serviceid=data.get('serviceid'),
-                                          zabbix_version_major=self.version_major,
                                           description=data.get('description', ''),
                                           status=int(data.get('status')),
-                                          # Does not support by Zbx < 6.0
                                           problem_tags=data.get('problem_tags', []),
-                                          # Does not support by Zbx 6.0+
-                                          triggerid=data.get('triggerid', None),
                                           )
-        if 'parents' in data:
-            zabbix_it_service.is_parents = True
         if 'children' in data:
+            zabbix_it_service.has_children = True
             child_services = self.get_service(parentids=zabbix_it_service.serviceid)
             zabbix_it_service.children.extend(map(self._init_zabbix_it_service, child_services))
         return zabbix_it_service
@@ -230,16 +176,18 @@ class Zabbix:
                 raise ZabbixCachetException(f'Can not find uniq "{root_name}" service in Zabbix')
             monitor_services = self._init_zabbix_it_service(root_service[0]).children
         else:
-            # TODO: Add support after 6.0
-            if self.version_major < 6:
-                services = self.get_service()
-                for i in services:
-                    # Do not proceed non-root services directly
-                    if len(i['parents']) == 0:
-                        monitor_services.append(self._init_zabbix_it_service(i))
-            else:
-                raise InvalidConfig(f"settings.root_service should be defined in you config yaml file because "
+            raise InvalidConfig(f"settings.root_service should be defined in you config yaml file because "
                                     f"you use Zabbix version {self.version}")
+
+            # TODO: Add support for Zabbix >= 6.0. Here's legacy code for reference:
+
+            #if self.version_major < 6:
+            #    services = self.get_service()
+            #    for i in services:
+            #        # Do not proceed non-root services directly
+            #        if len(i['parents']) == 0:
+            #            monitor_services.append(self._init_zabbix_it_service(i))
+
         return monitor_services
 
     def get_zabbix_service(self, serviceid: str) -> ZabbixService:
@@ -252,3 +200,33 @@ class Zabbix:
         if len(service) < 1:
             raise ZabbixServiceNotFound(f"No one service returned by serviceid - {serviceid}")
         return self._init_zabbix_it_service(service[0])
+
+    # TODO: This should just be a Hotfix, may reconsider later
+    def get_concated_problem_tags_with_children(self, service: ZabbixService) -> List[dict]:
+        """
+        Return all problem_tags of the given service **including all children**.
+        Duplicate tags (same combination of 'tag' and 'value') are removed while
+        preserving the original order: parent tags come first, followed by child tags.
+
+        Args:
+            service: Root ZabbixService whose tags should be gathered.
+
+        Returns:
+            A list of unique tag dictionaries.
+        """
+        from typing import Set, Tuple
+
+        def _collect(svc: ZabbixService, seen: Set[Tuple[str, str]]) -> List[Dict]:
+            tags: List[Dict] = []
+            # Add this service's tags, skipping ones we've already seen
+            for t in svc.problem_tags:
+                key = (t.get("tag"), t.get("value"))
+                if key not in seen:
+                    seen.add(key)
+                    tags.append(t)
+            # Recurse into children
+            for child in svc.children:
+                tags.extend(_collect(child, seen))
+            return tags
+
+        return _collect(service, set())

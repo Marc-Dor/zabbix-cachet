@@ -148,7 +148,7 @@ class Cachet:
         :rtype: dict or list
         """
         url = 'components'
-        data = self._http_get(url)
+        data = self._http_get(url, {'include': 'group'})
         meta = data.get('meta', {})
         pag  = meta.get('pagination', {}) if isinstance(meta.get('pagination', {}), dict) else meta
         total_pages = int(pag.get('total_pages', pag.get('last_page', 1)))
@@ -158,7 +158,7 @@ class Cachet:
                 if page == 1:
                     data_page = data
                 else:
-                    data_page = self._http_get(url, params={'page': page})
+                    data_page = self._http_get(url, params={'page': page, 'include': 'group'})
                 for component in data_page['data']:
                     #if component['name'] == name:     # cachet v2
                     #    components.append(component)
@@ -231,9 +231,9 @@ class Cachet:
         data = self._http_put(url, params)
         if data:
             logging.info('Component {name} (id={id}) was updated. Status - {status}'.format(
-                name=data['data']['name'],
+                name=data['data']['attributes']['name'],
                 id=id,
-                status=data['data']['status_name']))
+                status=data['data']['attributes']['status']['human']))
         return data
 
     def get_components_gr(self, name=None):
@@ -272,7 +272,7 @@ class Cachet:
         if components_gr_id['id'] == 0:
             url = 'component-groups'
             # TODO: make if possible to configure default collapsed value
-            params = {'name': name, 'collapsed': 2, 'visible': 1}
+            params = {'name': name, 'collapsed': 1, 'visible': 1}
             logging.debug('Creating Component Group {}...'.format(params['name']))
             data = self._http_post(url, params)
             if 'data' in data:
