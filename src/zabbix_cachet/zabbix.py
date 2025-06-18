@@ -31,7 +31,6 @@ class ZabbixService:
     serviceid: str
     status: int
     children: List['ZabbixService'] = field(default_factory=list)
-    problem_tags: List[dict] = field(default_factory=list)
     description: str = ''
     has_children: bool = False
 
@@ -92,8 +91,6 @@ class Zabbix:
             selectRelatedObject='extend'
         )
         if len(zbx_event) >= 1:
-            # TODO: This should never happen, right?
-            logging.error(f"Error - eventid {eventid} not unique? This should never happen!")
             return zbx_event[-1]
         return zbx_event
 
@@ -120,7 +117,7 @@ class Zabbix:
         return services
 
     @pyzabbix_safe([])
-    def get_service_events(self, serviceid: Union[List, str] = None) -> List[Dict]:
+    def get_service_events(self, serviceid: Union[List, str] = None) -> Dict:
         """
         https://www.zabbix.com/documentation/current/en/manual/api/reference/service/get
         :return:
@@ -130,7 +127,7 @@ class Zabbix:
             'selectChildren': 'extend',
             'selectProblemEvents': 'extend',
         }
-        return self.zapi.service.get(**query, serviceids=serviceid)
+        return self.zapi.service.get(**query, serviceids=serviceid)[0]
 
     def _init_zabbix_it_service(self, data: Dict) -> ZabbixService:
         """
@@ -138,12 +135,11 @@ class Zabbix:
         :param data: Service object
             https://www.zabbix.com/documentation/current/en/manual/api/reference/service/object
         """
-        logging.debug(f"Init ZabbixITService for {data.get('name')} with problem_tags {data.get('problem_tags', [])}")
+        logging.debug(f"Init ZabbixITService for {data.get('name')}")
         zabbix_it_service = ZabbixService(name=data.get('name'),
                                           serviceid=data.get('serviceid'),
                                           description=data.get('description', ''),
                                           status=int(data.get('status')),
-                                          problem_tags=data.get('problem_tags', []),
                                           )
         if 'children' in data:
             zabbix_it_service.has_children = True
@@ -176,8 +172,7 @@ class Zabbix:
                 raise ZabbixCachetException(f'Can not find uniq "{root_name}" service in Zabbix')
             monitor_services = self._init_zabbix_it_service(root_service[0]).children
         else:
-            raise InvalidConfig(f"settings.root_service should be defined in you config yaml file because "
-                                    f"you use Zabbix version {self.version}")
+            raise InvalidConfig(f"settings.root_service should be defined in you config yaml file")
 
             # TODO: Add support for Zabbix >= 6.0. Here's legacy code for reference:
 
@@ -200,33 +195,3 @@ class Zabbix:
         if len(service) < 1:
             raise ZabbixServiceNotFound(f"No one service returned by serviceid - {serviceid}")
         return self._init_zabbix_it_service(service[0])
-
-    # TODO: This should just be a Hotfix, may reconsider later
-    def get_concated_problem_tags_with_children(self, service: ZabbixService) -> List[dict]:
-        """
-        Return all problem_tags of the given service **including all children**.
-        Duplicate tags (same combination of 'tag' and 'value') are removed while
-        preserving the original order: parent tags come first, followed by child tags.
-
-        Args:
-            service: Root ZabbixService whose tags should be gathered.
-
-        Returns:
-            A list of unique tag dictionaries.
-        """
-        from typing import Set, Tuple
-
-        def _collect(svc: ZabbixService, seen: Set[Tuple[str, str]]) -> List[Dict]:
-            tags: List[Dict] = []
-            # Add this service's tags, skipping ones we've already seen
-            for t in svc.problem_tags:
-                key = (t.get("tag"), t.get("value"))
-                if key not in seen:
-                    seen.add(key)
-                    tags.append(t)
-            # Recurse into children
-            for child in svc.children:
-                tags.extend(_collect(child, seen))
-            return tags
-
-        return _collect(service, set())

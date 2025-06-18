@@ -272,8 +272,8 @@ class Cachet:
         components_gr_id = self.get_components_gr(name)
         if components_gr_id['id'] == 0:
             url = 'component-groups'
-            # TODO: make if possible to configure default collapsed value
-            params = {'name': name, 'collapsed': 1, 'visible': 1}
+            # TODO: Sadly the API doesn't allow a 'collapsed' value. Maybe check the docs in the future
+            params = {'name': name, 'visible': 1}
             logging.debug('Creating Component Group {}...'.format(params['name']))
             data = self._http_post(url, params)
             if 'data' in data:
@@ -333,7 +333,7 @@ class Cachet:
                 component_status
         @return: boolean
         """
-        # TODO: component_status doesn't exist in the API
+        # TODO: component_status doesn't exist in the API. Check the docs in the future
         url = 'incidents/' + str(id)
         params = kwargs
         data = self._http_put(url, params)
