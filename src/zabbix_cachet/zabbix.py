@@ -77,36 +77,23 @@ class Zabbix:
         """
         version = self.zapi.apiinfo.version()
         return version
-
+    
     @pyzabbix_safe({})
-    def get_trigger(self, tags: List = None) -> List[dict]:
-        """
-        Get trigger information by tags
-        https://www.zabbix.com/documentation/6.0/en/manual/api/reference/trigger/get
-        """
-        trigger = self.zapi.trigger.get(
-            expandComment='true',
-            expandDescription='true',
-            tags=tags,
-            only_true=True)
-        return trigger
-
-    @pyzabbix_safe({})
-    def get_event(self, triggerid):
+    def get_event_info(self, eventid: str) -> List[dict]:
         """
         https://www.zabbix.com/documentation/current/en/manual/api/reference/event/get
-        Get event information based on triggerid
-        @param triggerid: string
+        Get information about an event and the trigger that caused it
+        @param eventid: string
         @return: dict of data
         """
         zbx_event = self.zapi.event.get(
+            eventids=eventid,
             select_acknowledges='extend',
-            object=0,
-            value=1,
-            objectids=triggerid,
-            sortfield=['clock']
+            selectRelatedObject='extend'
         )
         if len(zbx_event) >= 1:
+            # TODO: This should never happen, right?
+            logging.error(f"Error - eventid {eventid} not unique? This should never happen!")
             return zbx_event[-1]
         return zbx_event
 
@@ -114,7 +101,7 @@ class Zabbix:
     def get_service(self, name: str = '', serviceid: Union[List, str] = None,
                     parentids: str = '') -> List[Dict]:
         """
-        https://www.zabbix.com/documentation/6.0/en/manual/appendix/services_upgrade
+        https://www.zabbix.com/documentation/current/en/manual/api/reference/service/get
         :return:
         """
         query = {
@@ -131,6 +118,19 @@ class Zabbix:
         else:
             services = self.zapi.service.get(**query)
         return services
+
+    @pyzabbix_safe([])
+    def get_service_events(self, serviceid: Union[List, str] = None) -> List[Dict]:
+        """
+        https://www.zabbix.com/documentation/current/en/manual/api/reference/service/get
+        :return:
+        """
+        query = {
+            'output': 'extend',
+            'selectChildren': 'extend',
+            'selectProblemEvents': 'extend',
+        }
+        return self.zapi.service.get(**query, serviceids=serviceid)
 
     def _init_zabbix_it_service(self, data: Dict) -> ZabbixService:
         """

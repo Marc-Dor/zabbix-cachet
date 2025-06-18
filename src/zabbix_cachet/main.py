@@ -131,28 +131,30 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
             comp.get('attributes', {}).get('status', {}).get('value')
         )
 
+        component_incidents = cachet.get_incidents(i.cachet_component_id)
+
+        # TODO: This only fixes one incident, right? Should loop through incidents with the right component-id
         if service.is_status_ok:
             # component in operational mode
             if str(component_status) == '1':
                 continue
 
             # component not operational mode. Resolve it.
-            last_inc = cachet.get_incident(i.cachet_component_id)
-            if str(last_inc['id']) != '0':
-                inc_msg = config.templates.resolving.format(
-                    time=datetime.datetime.now(tz=config.tz).strftime('%b %d, %H:%M'),
-                ) + cachet.get_incident(i.cachet_component_id)['attributes']['message']
-                cachet.upd_incident(last_inc['id'],
-                                    status=4,
-                                    component_id=i.cachet_component_id,
-                                    component_status=1,
-                                    message=inc_msg)
-
-                # TODO: Hotfix, because components don't get attached to incident https://github.com/cachethq/core/issues/156
-                cachet.upd_components(i.cachet_component_id, status=1)
-            # Incident does not exist. Just change component status
-            else:
-                cachet.upd_components(i.cachet_component_id, status=1)
+            for incident in component_incidents:
+                # Incident already registered
+                if incident['attributes']['status']['value'] != '4':
+                    logging.debug(f"Found unfixed incident (id: {incident['id']}). Resolving it")
+                    inc_msg = config.templates.resolving.format(
+                        time=datetime.datetime.now(tz=config.tz).strftime('%b %d, %H:%M'),
+                    ) + incident['attributes']['message']
+                    cachet.upd_incident(incident['id'],
+                                        status=4,
+                                        component_id=i.cachet_component_id,
+                                        component_status=1,
+                                        message=inc_msg)
+                    
+            cachet.upd_components(i.cachet_component_id, status=1)
+            
             # Continue with next service. This one is ok.
             continue
 
@@ -160,24 +162,17 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
 
         # TODO: For Services that don't have problem_tags, but have child-services, this completely breaks (It get's EVERY unresolved problem)
         #triggers = zapi.get_trigger(tags=service.problem_tags)
-        # TODO: Needs to go through childs recursively instead and figure out root-cause somehow.. including 'additional rules' of the service
 
-        # TODO: Hotfix
-        if service.has_children:
-            problem_tags = zapi.get_concated_problem_tags_with_children(service)
-            logging.debug(f"Recursively concatenated problem_tags for service {service.name}: {problem_tags}")
-            triggers = zapi.get_trigger(problem_tags)
-        else:
-            triggers = zapi.get_trigger(tags=service.problem_tags)
+        problem_events = zapi.get_service_events(service.serviceid)
 
-        for trigger in triggers:
-            trigger_id = trigger['triggerid']
-            zbx_event = zapi.get_event(trigger_id)
+        logging.debug(f"problem_events of service {service.name}: " + str(problem_events))
+
+        for problem_event in problem_events['problem_events']:
+            zbx_event = zapi.get_event_info(problem_event['eventid'])
+            trigger = zbx_event['relatedObject']
+
             inc_name = trigger['description']
-            if not zbx_event:
-                logging.warning(f'Failed to get zabbix event for trigger {trigger_id}')
-                # Mock zbx_event for further usage
-                zbx_event = {'acknowledged': '0'}
+
             if zbx_event.get('acknowledged', '0') == '1':
                 inc_status = 2
                 for msg in zbx_event['acknowledges']:  # type: dict
@@ -193,7 +188,7 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
                         inc_msg = ack_msg + inc_msg
             else:
                 inc_status = 1
-
+            
             # TODO: Does this allow to change via Dashboard?
             if service.status >= 4:
                 comp_status = 4
@@ -201,7 +196,7 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
                 comp_status = 3
             else:
                 comp_status = 2
-
+            
             if not inc_msg and config.templates.investigating:
                 zbx_event_clock = int(zbx_event.get('clock', 0))
                 if zbx_event_clock:
@@ -226,22 +221,35 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
             if i.cachet_group_name:
                 inc_name = i.cachet_group_name + ' | ' + inc_name
 
-            last_inc = cachet.get_incident(i.cachet_component_id)
+            component_incidents = cachet.get_incidents(i.cachet_component_id)
+
+            logging.debug('Looking for unfixed cachet-incident "' + trigger.get('description') + '"...')
+            found_unfixed_incident = False
+
+            for incident in component_incidents:
+                if trigger.get('description') in incident['attributes']['name']:
+
+                    # Incident already registered
+                    if incident['attributes']['status']['value'] != '4':
+                        logging.debug(f"Found unfixed and name-matching incident. (id: {incident['id']})")
+                        # Only incident message can change. So check if this has happened
+                        if incident['attributes']['message'].strip() != inc_msg.strip():
+                            cachet.upd_incident(incident['id'], message=inc_msg, status=inc_status,
+                                                component_status=comp_status)
+                            # TODO: Hotfix, because components don't get attached to incident https://github.com/cachethq/core/issues/156
+                            cachet.upd_components(i.cachet_component_id, status=comp_status)
+                        found_unfixed_incident = True
+                    
+                    # Stop looking through incidents once there's a name-matching one, no matter the status
+                    break
+            
+
             # Incident not registered
-            if last_inc['attributes']['status']['value'] in ('-1', '4'):
+            if not found_unfixed_incident:
                 cachet.new_incidents(name=inc_name, message=inc_msg, status=inc_status,
-                                     component_id=i.cachet_component_id, component_status=comp_status)
+                                    component_id=i.cachet_component_id, component_status=comp_status)
                 # TODO: Hotfix, because components don't get attached to incident https://github.com/cachethq/core/issues/156
                 cachet.upd_components(i.cachet_component_id, status=comp_status)
-
-            # Incident already registered
-            else:
-                # Only incident message can change. So check if this has happened
-                if last_inc['attributes']['message'].strip() != inc_msg.strip():
-                    cachet.upd_incident(last_inc['id'], message=inc_msg, status=inc_status,
-                                        component_status=comp_status)
-                    # TODO: Hotfix, because components don't get attached to incident https://github.com/cachethq/core/issues/156
-                    cachet.upd_components(i.cachet_component_id, status=comp_status)
     return True
 
 

@@ -2,6 +2,7 @@ import json
 import logging
 import requests
 from operator import itemgetter
+from typing import List, Dict
 
 
 from zabbix_cachet.excepltions import CachetApiException
@@ -281,10 +282,10 @@ class Cachet:
         else:
             return components_gr_id
 
-    def get_incident(self, component_id):
+    def get_incidents(self, component_id: int) -> List[Dict]:
         """
-        Get last incident for component_id
-        @param component_id: string
+        Get incidents for component_id
+        @param component_id: int
         @return: dict of data
         """
         # TODO: make search by name
@@ -293,6 +294,8 @@ class Cachet:
         meta = data.get('meta', {})
         pag  = meta.get('pagination', {}) if isinstance(meta.get('pagination', {}), dict) else meta
         total_pages = int(pag.get('total_pages', pag.get('last_page', 1)))
+
+        incidents = []
         for page in range(total_pages, 0, -1):
             data = self._http_get(url, params={'page': page})
             data_sorted = sorted(data['data'], key=itemgetter('id'), reverse=True)
@@ -300,8 +303,8 @@ class Cachet:
                 if str(incident['attributes']['component_id']) == str(component_id):
                     # Convert status to str
                     incident['attributes']['status']['value'] = str(incident['attributes']['status']['value'])
-                    return incident
-        return {'id': '0', 'attributes': {'name': 'Does not exist', 'status': {'value': '-1'}}}
+                    incidents.append(incident)
+        return incidents
 
     def new_incidents(self, **kwargs):
         """
