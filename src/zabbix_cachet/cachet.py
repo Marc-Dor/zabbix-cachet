@@ -178,10 +178,10 @@ class Cachet:
         return (
             component_dict.get('group_id') or                       # Cachet 2.x
             component_dict.get('attributes', {}).get('group_id') or # rare in v3
-            component_dict.get('relationships', {})
+            (component_dict.get('relationships', {})
              .get('group', {})
-             .get('data', {})
-            .get('id', 0)                            # v3 JSON:API
+             .get('data', {}) or {})
+             .get('id', 0)                            # v3 JSON:API
         )
 
     def new_components(self, name, **kwargs):
@@ -209,6 +209,11 @@ class Cachet:
         elif isinstance(component, dict):
             if component.get('id') and self._get_component_groupid(component) == params['component_group_id']:
                 return component
+
+        # component_group_id 0 (meaning no group) isn't allowed in cachet v3 anymore
+        if params['component_group_id'] == 0:
+            params.pop('component_group_id')
+
         # Create component if it does not exist or exist in other group
         url = 'components'
         # params = {'name': name, 'link': link, 'description': description, 'status': status}

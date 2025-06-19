@@ -107,10 +107,6 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
     """
     config = Config()
     for i in service_map:  # type: ZabbixCachetMap
-        # inc_status = 1
-        # comp_status = 1
-        # inc_name = ''
-        inc_msg = ''
 
         try:
             service = zapi.get_zabbix_service(serviceid=i.zbx_serviceid)
@@ -156,6 +152,7 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
             trigger = zbx_event['relatedObject']
 
             inc_name = zbx_event.get('name')
+            inc_msg = ''
 
             active_triggers.add(inc_name)
 
@@ -217,7 +214,7 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
                     # Incident already registered
                     if incident['attributes']['status']['value'] != '4':
                         logging.debug(f"Found unfixed and name-matching incident. (id: {incident['id']})")
-                        # Only incident message can change. So check if this has happened
+                        # Incident message could've changed. So check if that happened
                         if incident['attributes']['message'].strip() != inc_msg.strip():
                             cachet.upd_incident(incident['id'], message=inc_msg, status=inc_status,
                                                 component_status=comp_status)
@@ -242,7 +239,7 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
 
             inc_name = incident['attributes']['name']
             if not any(name in inc_name for name in active_triggers):
-                logging.debug(f"Closing stale incident (id: {incident['id']})")
+                logging.info(f"Closing stale incident (id: {incident['id']})")
                 msg = config.templates.resolving.format(
                     time=datetime.datetime.now(tz=config.tz).strftime('%b %d, %H:%M'),
                 ) + incident['attributes']['message']
@@ -252,6 +249,7 @@ def triggers_watcher(service_map: List[ZabbixCachetMap], zapi: Zabbix, cachet: C
                                     component_status=1,
                                     message=msg)
 
+        # If no active incidents are left, set the component to operational again
         if not active_triggers:
             cachet.upd_components(i.cachet_component_id, status=1)
 
